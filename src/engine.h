@@ -67,20 +67,6 @@ struct PushConstants {
 constexpr unsigned int FRAME_OVERLAP = 2;
 constexpr bool useValidationLayers = true;
 
-// then the SSBO for the agents
-struct Agent {
-	float mass;
-	float pad;
-	float drag;
-	float senseDistance;
-	float senseAngle;
-	float turnAngle;
-	float forceAmount; // replaces stepsize
-	float depositAmount;
-	glm::vec2 position;
-	glm::vec2 velocity;
-};
-
 struct ComputeEffect {
 	// pipeline is the thing we use to invoke this shader pass
 	VkPipeline pipeline;
@@ -117,23 +103,16 @@ public:
 	uint32_t lastPreset;
 	std::vector< uint32_t > presets;
 
-// physarum data/storage resources
-	uint32_t numAgents = 30000 * 256;
-	AllocatedBuffer simAgentBuffer;
-	AllocatedBuffer physarumGlobalUBO;
+// data/storage resources
+	AllocatedBuffer GlobalUBO;
 	GlobalData globalData; // goes into the UBO
 
 	// the simulation buffer resolution
-	VkExtent2D FloatBufferResolution{ 4096, 2048 };
-	AllocatedImage ResolveImage;
-	AllocatedImage StateImage;
-	AllocatedImage ScratchImage;
+	VkExtent2D RTBufferResolution{ 1280, 720 };
+	AllocatedImage XYZImage;
 
 	// wrapping the compute passes which are involved
-	ComputeEffect AgentUpdate;
-	ComputeEffect BufferCopyClear;
-	ComputeEffect BufferBlurH;
-	ComputeEffect BufferBlurV;
+	ComputeEffect Raytrace;
 	ComputeEffect BufferPresent;
 
 	// engine triggers

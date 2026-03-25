@@ -96,33 +96,22 @@ void PrometheusInstance::Draw () {
 	drawExtent.width = uint32_t( std::min( swapchainExtent.width, drawImage.imageExtent.width ) * renderScale );
 
 	// update the UBO
-	globalData.floatBufferResolution = glm::uvec2( FloatBufferResolution.width, FloatBufferResolution.height );
+	globalData.floatBufferResolution = glm::uvec2( RTBufferResolution.width, RTBufferResolution.height );
 	globalData.presentBufferResolution = glm::uvec2( drawExtent.width, drawExtent.height );
 
 	// write directly from the memory on the PrometheusInstance
-	GlobalData* uniformData = ( GlobalData * ) physarumGlobalUBO.allocation->GetMappedData();
+	GlobalData* uniformData = ( GlobalData * ) GlobalUBO.allocation->GetMappedData();
 	*uniformData = globalData;
 
 	// start the command buffer recording
 	VK_CHECK( vkBeginCommandBuffer( cmd, &cmdBeginInfo ) );
 
 	// put the core images into a general format
-	vkutil::transition_image( cmd, ResolveImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL );
-	vkutil::transition_image( cmd, StateImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL );
-	vkutil::transition_image( cmd, ScratchImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL );
+	vkutil::transition_image( cmd, XYZImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL );
 	vkutil::transition_image( cmd, drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL );
 
-	// update the agents
-	AgentUpdate.invoke( cmd );
-
-	// resolve the desposit from the update operation, add to State
-	BufferCopyClear.invoke( cmd );
-
-	// First blur pass (horizontal), State->Scratch
-	BufferBlurH.invoke( cmd );
-
-	// Second blur pass (vertical), Scratch->State
-	BufferBlurV.invoke( cmd );
+	// compute shader to do one update of the raytrace process
+	Raytrace.invoke( cmd );
 
 	// compute shader to put the resolved final image into the drawImage...
 	BufferPresent.invoke( cmd );
@@ -195,11 +184,6 @@ void PrometheusInstance::MainLoop () {
 
 			if ( e.type == SDL_KEYUP && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE ) {
 				quit = true;
-			}
-
-			// triggering an agent reset
-			if ( e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_R ) {
-				lastPreset = AgentUpdate.pushConstants.operation = genWangSeed();
 			}
 
 			if ( e.type == SDL_WINDOWEVENT ) {
@@ -482,46 +466,30 @@ void PrometheusInstance::initDescriptors  () {
 void PrometheusInstance::initResources () {
 // API resource allocation:
 	// create the buffer for the UBO
-	physarumGlobalUBO = createBuffer( sizeof( GlobalData ), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU );
+	GlobalUBO = createBuffer( sizeof( GlobalData ), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU );
 
-	// create the buffer for the agents
-	simAgentBuffer = createBuffer( numAgents * sizeof( Agent ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY );
-
-	// create the two Float Buffer images ( A + B )
-	VkExtent3D bufferExtent = { FloatBufferResolution.width, FloatBufferResolution.height, 1 };
-	ResolveImage = createImage( bufferExtent, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT );
-	StateImage = createImage( bufferExtent, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT );
-	ScratchImage = createImage( bufferExtent, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT );
+	// create the accumulator texture
+	VkExtent3D bufferExtent = { RTBufferResolution.width, RTBufferResolution.height, 1 };
+	XYZImage = createImage( bufferExtent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT );
 
 	// make sure to clean up at the end
 	mainDeletionQueue.push_function([ & ] () {
 		// destroying buffers
-		destroyBuffer( physarumGlobalUBO );
-		destroyBuffer( simAgentBuffer );
+		destroyBuffer( GlobalUBO );
 
 		// destroying images
-		destroyImage( ResolveImage );
-		destroyImage( StateImage );
-		destroyImage( ScratchImage );
+		destroyImage( XYZImage );
 	});
 }
 
 void PrometheusInstance::initComputePasses () {
-// we have 5 to setup now:
-	// Agent Update
-	// Copy/Clear
-	// BlurH
-	// BlurV
-	// Present
 
 	{ // Agent Update
 		{ // descriptor layout
 			DescriptorLayoutBuilder builder;
 			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
-			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ); // simulation agent SSBO
-			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ); // State buffer, with linear filtering
-			builder.add_binding( 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // the uint buffer that you want to resolve to
-			AgentUpdate.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
+			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // the XYZ accumulator
+			Raytrace.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
 		}
 
 		{ // pipeline layout + compute pipeline
@@ -533,68 +501,66 @@ void PrometheusInstance::initComputePasses () {
 			VkPipelineLayoutCreateInfo computeLayout{};
 			computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 			computeLayout.pNext = nullptr;
-			computeLayout.pSetLayouts = &AgentUpdate.descriptorSetLayout;
+			computeLayout.pSetLayouts = &Raytrace.descriptorSetLayout;
 			computeLayout.setLayoutCount = 1;
 			computeLayout.pPushConstantRanges = &pushConstant;
 			computeLayout.pushConstantRangeCount = 1;
 
-			VK_CHECK( vkCreatePipelineLayout( device, &computeLayout, nullptr, &AgentUpdate.pipelineLayout ) );
+			VK_CHECK( vkCreatePipelineLayout( device, &computeLayout, nullptr, &Raytrace.pipelineLayout ) );
 
-			VkShaderModule AgentUpdateShader;
-			if ( !vkutil::load_shader_module("../shaders/agentUpdate.comp.glsl.spv", device, &AgentUpdateShader ) ) {
-				fmt::print( "Error when building the Agent Update Compute Shader\n" );
+			VkShaderModule RaytraceShader;
+			if ( !vkutil::load_shader_module("../shaders/raytrace.comp.glsl.spv", device, &RaytraceShader ) ) {
+				fmt::print( "Error when building the Raytrace Compute Shader\n" );
 			}
 
 			VkPipelineShaderStageCreateInfo stageinfo{};
 			stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			stageinfo.pNext = nullptr;
 			stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-			stageinfo.module = AgentUpdateShader;
+			stageinfo.module = RaytraceShader;
 			stageinfo.pName = "main";
 
 			VkComputePipelineCreateInfo computePipelineCreateInfo{};
 			computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
 			computePipelineCreateInfo.pNext = nullptr;
-			computePipelineCreateInfo.layout = AgentUpdate.pipelineLayout;
+			computePipelineCreateInfo.layout = Raytrace.pipelineLayout;
 			computePipelineCreateInfo.stage = stageinfo;
 
-			VK_CHECK( vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &AgentUpdate.pipeline ) );
-			vkDestroyShaderModule( device, AgentUpdateShader, nullptr );
+			VK_CHECK( vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &Raytrace.pipeline ) );
+			vkDestroyShaderModule( device, RaytraceShader, nullptr );
 
 			// deletors for the pipeline layout + pipeline
 			mainDeletionQueue.push_function( [ & ] () {
-				vkDestroyDescriptorSetLayout( device, AgentUpdate.descriptorSetLayout, nullptr );
-				vkDestroyPipelineLayout( device, AgentUpdate.pipelineLayout, nullptr );
-				vkDestroyPipeline( device, AgentUpdate.pipeline, nullptr );
+				vkDestroyDescriptorSetLayout( device, Raytrace.descriptorSetLayout, nullptr );
+				vkDestroyPipelineLayout( device, Raytrace.pipelineLayout, nullptr );
+				vkDestroyPipeline( device, Raytrace.pipeline, nullptr );
 			});
 		}
 
 		// invoke() lambda
-		AgentUpdate.invoke = [ & ] ( VkCommandBuffer cmd ){
+		Raytrace.invoke = [ & ] ( VkCommandBuffer cmd ){
 			// dynamic descriptor allocation, to bind a texture
-			AgentUpdate.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, AgentUpdate.descriptorSetLayout );
+			Raytrace.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, Raytrace.descriptorSetLayout );
 			{
 				DescriptorWriter writer;
-				writer.write_buffer( 0, physarumGlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
-				writer.write_buffer( 1, simAgentBuffer.buffer, numAgents * sizeof( Agent ), 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER );
-				writer.write_image( 2, StateImage.imageView, defaultSamplerLinear, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER );
-				writer.write_image( 3, ResolveImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
-				writer.update_set( device, AgentUpdate.descriptorSet );
+				writer.write_buffer( 0, GlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
+				writer.write_image( 1, XYZImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
+				writer.update_set( device, Raytrace.descriptorSet );
 			}
 
-			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, AgentUpdate.pipeline );
+			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, Raytrace.pipeline );
 
 			// bind the descriptor set, as just recorded
-			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, AgentUpdate.pipelineLayout, 0, 1, &AgentUpdate.descriptorSet, 0, nullptr );
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, Raytrace.pipelineLayout, 0, 1, &Raytrace.descriptorSet, 0, nullptr );
 
 			// get a new wang RNG seed
-			AgentUpdate.pushConstants.wangSeed = genWangSeed();
+			Raytrace.pushConstants.wangSeed = genWangSeed();
 
 			// send the current value of the push constants
-			vkCmdPushConstants( cmd, AgentUpdate.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &AgentUpdate.pushConstants );
+			vkCmdPushConstants( cmd, Raytrace.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &Raytrace.pushConstants );
 
-			// and the actual compute dispatch for the simulation agents
-			vkCmdDispatch( cmd, numAgents / 256, 1, 1 );
+			// dispatch for all the pixels
+			vkCmdDispatch( cmd, RTBufferResolution.width / 16, RTBufferResolution.height / 16, 1 );
 
 			// also needs to include access barrier for the resolve image
 			VkImageMemoryBarrier2 barrier {
@@ -610,338 +576,7 @@ void PrometheusInstance::initComputePasses () {
 				.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
 				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 
-				.image = ResolveImage.image,
-				.subresourceRange = {
-					VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
-				}
-			};
-
-			VkDependencyInfo barrierDependency {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = 1,
-				.pImageMemoryBarriers = &barrier
-			};
-
-			vkCmdPipelineBarrier2( cmd, &barrierDependency );
-
-			if ( AgentUpdate.pushConstants.operation != 0 )
-				AgentUpdate.pushConstants.operation = 0; // reset
-		};
-	}
-
-	{ // Copy/Clear
-		{ // descriptor layout
-			DescriptorLayoutBuilder builder;
-			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
-			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // Resolve buffer
-			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // State buffer
-			BufferCopyClear.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
-		}
-
-		{ // pipeline layout + compute pipeline
-			VkPushConstantRange pushConstant{};
-			pushConstant.offset = 0;
-			pushConstant.size = sizeof( PushConstants );
-			pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-			VkPipelineLayoutCreateInfo computeLayout{};
-			computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-			computeLayout.pNext = nullptr;
-			computeLayout.pSetLayouts = &BufferCopyClear.descriptorSetLayout;
-			computeLayout.setLayoutCount = 1;
-			computeLayout.pPushConstantRanges = &pushConstant;
-			computeLayout.pushConstantRangeCount = 1;
-
-			VK_CHECK( vkCreatePipelineLayout( device, &computeLayout, nullptr, &BufferCopyClear.pipelineLayout ) );
-
-			VkShaderModule BufferCopyClearShader;
-			if ( !vkutil::load_shader_module("../shaders/bufferCopyClear.comp.glsl.spv", device, &BufferCopyClearShader ) ) {
-				fmt::print( "Error when building the Buffer Copy/Clear Compute Shader\n" );
-			}
-
-			VkPipelineShaderStageCreateInfo stageinfo{};
-			stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-			stageinfo.pNext = nullptr;
-			stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-			stageinfo.module = BufferCopyClearShader;
-			stageinfo.pName = "main";
-
-			VkComputePipelineCreateInfo computePipelineCreateInfo{};
-			computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-			computePipelineCreateInfo.pNext = nullptr;
-			computePipelineCreateInfo.layout = BufferCopyClear.pipelineLayout;
-			computePipelineCreateInfo.stage = stageinfo;
-
-			VK_CHECK( vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &BufferCopyClear.pipeline ) );
-			vkDestroyShaderModule( device, BufferCopyClearShader, nullptr );
-
-			// deletors for the pipeline layout + pipeline
-			mainDeletionQueue.push_function( [ & ] () {
-				vkDestroyDescriptorSetLayout( device, BufferCopyClear.descriptorSetLayout, nullptr );
-				vkDestroyPipelineLayout( device, BufferCopyClear.pipelineLayout, nullptr );
-				vkDestroyPipeline( device, BufferCopyClear.pipeline, nullptr );
-			});
-		}
-
-		// invoke() lambda
-		BufferCopyClear.invoke = [ & ]( VkCommandBuffer cmd ) {
-			BufferCopyClear.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, BufferCopyClear.descriptorSetLayout );
-			{
-				DescriptorWriter writer;
-				writer.write_buffer( 0, physarumGlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
-				writer.write_image( 1, ResolveImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
-				writer.write_image( 2, StateImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
-				writer.update_set( device, BufferCopyClear.descriptorSet );
-			}
-
-			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, BufferCopyClear.pipeline );
-
-			// bind the descriptor set, as just recorded
-			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, BufferCopyClear.pipelineLayout, 0, 1, &BufferCopyClear.descriptorSet, 0, nullptr );
-
-			// get a new wang RNG seed
-			BufferCopyClear.pushConstants.wangSeed = genWangSeed();
-
-			// send the current value of the push constants
-			vkCmdPushConstants( cmd, BufferCopyClear.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &BufferCopyClear.pushConstants );
-
-			// and the actual compute dispatch for the simulation agents
-			vkCmdDispatch( cmd, ( FloatBufferResolution.width + 15 ) / 16, ( FloatBufferResolution.height + 15 ) / 16, 1 );
-
-			// also needs to include access barrier for the resolve image
-			VkImageMemoryBarrier2 barrier {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-
-				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-
-				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-
-				// now the blur has finished, we are using the filtered reads until the next agent raster
-				.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-
-				.image = StateImage.image,
-				.subresourceRange = {
-					VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
-				}
-			};
-
-			VkDependencyInfo barrierDependency {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = 1,
-				.pImageMemoryBarriers = &barrier
-			};
-
-			vkCmdPipelineBarrier2( cmd, &barrierDependency );
-		};
-	}
-
-	{ // BlurH
-		{ // descriptor layout
-			DescriptorLayoutBuilder builder;
-			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
-			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ); // State Buffer
-			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // Scratch Buffer
-			BufferBlurH.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
-		}
-
-		{ // pipeline layout + compute pipeline
-			VkPushConstantRange pushConstant{};
-			pushConstant.offset = 0;
-			pushConstant.size = sizeof( PushConstants );
-			pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-			VkPipelineLayoutCreateInfo computeLayout{};
-			computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-			computeLayout.pNext = nullptr;
-			computeLayout.pSetLayouts = &BufferBlurH.descriptorSetLayout;
-			computeLayout.setLayoutCount = 1;
-			computeLayout.pPushConstantRanges = &pushConstant;
-			computeLayout.pushConstantRangeCount = 1;
-
-			VK_CHECK( vkCreatePipelineLayout( device, &computeLayout, nullptr, &BufferBlurH.pipelineLayout ) );
-
-			VkShaderModule BufferBlurHShader;
-			if ( !vkutil::load_shader_module("../shaders/bufferBlurH.comp.glsl.spv", device, &BufferBlurHShader ) ) {
-				fmt::print( "Error when building the Buffer Blur (H) Compute Shader\n" );
-			}
-
-			VkPipelineShaderStageCreateInfo stageinfo{};
-			stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-			stageinfo.pNext = nullptr;
-			stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-			stageinfo.module = BufferBlurHShader;
-			stageinfo.pName = "main";
-
-			VkComputePipelineCreateInfo computePipelineCreateInfo{};
-			computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-			computePipelineCreateInfo.pNext = nullptr;
-			computePipelineCreateInfo.layout = BufferBlurH.pipelineLayout;
-			computePipelineCreateInfo.stage = stageinfo;
-
-			VK_CHECK( vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &BufferBlurH.pipeline ) );
-			vkDestroyShaderModule( device, BufferBlurHShader, nullptr );
-
-			// deletors for the pipeline layout + pipeline
-			mainDeletionQueue.push_function( [ & ] () {
-				vkDestroyDescriptorSetLayout( device, BufferBlurH.descriptorSetLayout, nullptr );
-				vkDestroyPipelineLayout( device, BufferBlurH.pipelineLayout, nullptr );
-				vkDestroyPipeline( device, BufferBlurH.pipeline, nullptr );
-			});
-		}
-
-		// invoke() lambda
-		BufferBlurH.invoke = [ & ]( VkCommandBuffer cmd ) {
-			BufferBlurH.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, BufferBlurH.descriptorSetLayout );
-			{
-				DescriptorWriter writer;
-				writer.write_buffer( 0, physarumGlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
-				writer.write_image( 1, StateImage.imageView, defaultSamplerLinear, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER );
-				writer.write_image( 2, ScratchImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
-				writer.update_set( device, BufferBlurH.descriptorSet );
-			}
-
-			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, BufferBlurH.pipeline );
-
-			// bind the descriptor set, as just recorded
-			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, BufferBlurH.pipelineLayout, 0, 1, &BufferBlurH.descriptorSet, 0, nullptr );
-
-			// get a new wang RNG seed
-			BufferBlurH.pushConstants.wangSeed = genWangSeed();
-
-			// send the current value of the push constants
-			vkCmdPushConstants( cmd, BufferBlurH.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &BufferBlurH.pushConstants );
-
-			// and the actual compute dispatch for the simulation agents
-			vkCmdDispatch( cmd, ( FloatBufferResolution.width + 15 ) / 16, ( FloatBufferResolution.height + 15 ) / 16, 1 );
-
-			// also needs to include access barrier for the resolve image
-			VkImageMemoryBarrier2 barrier {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-
-				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-
-				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-
-				// now the blur has finished, we are using the filtered reads until the next agent raster
-				.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-
-				.image = ScratchImage.image,
-				.subresourceRange = {
-					VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
-				}
-			};
-
-			VkDependencyInfo barrierDependency {
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = 1,
-				.pImageMemoryBarriers = &barrier
-			};
-
-			vkCmdPipelineBarrier2( cmd, &barrierDependency );
-		};
-	}
-
-	{ // BlurV
-		{ // descriptor layout
-			DescriptorLayoutBuilder builder;
-			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
-			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // State Buffer
-			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ); // Scratch Buffer
-			BufferBlurV.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
-		}
-
-		{ // pipeline layout + compute pipeline
-			VkPushConstantRange pushConstant{};
-			pushConstant.offset = 0;
-			pushConstant.size = sizeof( PushConstants );
-			pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-			VkPipelineLayoutCreateInfo computeLayout{};
-			computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-			computeLayout.pNext = nullptr;
-			computeLayout.pSetLayouts = &BufferBlurV.descriptorSetLayout;
-			computeLayout.setLayoutCount = 1;
-			computeLayout.pPushConstantRanges = &pushConstant;
-			computeLayout.pushConstantRangeCount = 1;
-
-			VK_CHECK( vkCreatePipelineLayout( device, &computeLayout, nullptr, &BufferBlurV.pipelineLayout ) );
-
-			VkShaderModule BufferBlurVShader;
-			if ( !vkutil::load_shader_module("../shaders/bufferBlurV.comp.glsl.spv", device, &BufferBlurVShader ) ) {
-				fmt::print( "Error when building the Buffer Blur (V) Compute Shader\n" );
-			}
-
-			VkPipelineShaderStageCreateInfo stageinfo{};
-			stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-			stageinfo.pNext = nullptr;
-			stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-			stageinfo.module = BufferBlurVShader;
-			stageinfo.pName = "main";
-
-			VkComputePipelineCreateInfo computePipelineCreateInfo{};
-			computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-			computePipelineCreateInfo.pNext = nullptr;
-			computePipelineCreateInfo.layout = BufferBlurV.pipelineLayout;
-			computePipelineCreateInfo.stage = stageinfo;
-
-			VK_CHECK( vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &BufferBlurV.pipeline ) );
-			vkDestroyShaderModule( device, BufferBlurVShader, nullptr );
-
-			// deletors for the pipeline layout + pipeline
-			mainDeletionQueue.push_function( [ & ] () {
-				vkDestroyDescriptorSetLayout( device, BufferBlurV.descriptorSetLayout, nullptr );
-				vkDestroyPipelineLayout( device, BufferBlurV.pipelineLayout, nullptr );
-				vkDestroyPipeline( device, BufferBlurV.pipeline, nullptr );
-			});
-		}
-
-		// invoke() lambda
-		BufferBlurV.invoke = [ & ]( VkCommandBuffer cmd ) {
-			BufferBlurV.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, BufferBlurV.descriptorSetLayout );
-			{
-				DescriptorWriter writer;
-				writer.write_buffer( 0, physarumGlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
-				writer.write_image( 1, StateImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
-				writer.write_image( 2, ScratchImage.imageView, defaultSamplerLinear, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER );
-				writer.update_set( device, BufferBlurV.descriptorSet );
-			}
-
-			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, BufferBlurV.pipeline );
-
-			// bind the descriptor set, as just recorded
-			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, BufferBlurV.pipelineLayout, 0, 1, &BufferBlurV.descriptorSet, 0, nullptr );
-
-			// get a new wang RNG seed
-			BufferBlurV.pushConstants.wangSeed = genWangSeed();
-
-			// send the current value of the push constants
-			vkCmdPushConstants( cmd, BufferBlurV.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &BufferBlurV.pushConstants );
-
-			// and the actual compute dispatch for the simulation agents
-			// vkCmdDispatch( cmd, ( FloatBufferResolution.width + 15 ) / 16, ( FloatBufferResolution.height + 15 ) / 16, 1 );
-			vkCmdDispatch( cmd, FloatBufferResolution.width / 16, FloatBufferResolution.height / 16, 1 );
-
-			// also needs to include access barrier for the resolve image
-			VkImageMemoryBarrier2 barrier {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-
-				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
-
-				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-				.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-
-				// now the blur has finished, we are using the filtered reads until the next agent raster
-				.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-
-				.image = StateImage.image,
+				.image = XYZImage.image,
 				.subresourceRange = {
 					VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
 				}
@@ -962,7 +597,7 @@ void PrometheusInstance::initComputePasses () {
 			DescriptorLayoutBuilder builder;
 			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
 			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // draw image
-			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ); // State Buffer -> linear filter
+			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ); // XYZ Buffer -> linear filter
 			BufferPresent.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
 		}
 
@@ -1016,9 +651,9 @@ void PrometheusInstance::initComputePasses () {
 			BufferPresent.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, BufferPresent.descriptorSetLayout );
 			{
 				DescriptorWriter writer;
-				writer.write_buffer( 0, physarumGlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
+				writer.write_buffer( 0, GlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
 				writer.write_image( 1, drawImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
-				writer.write_image( 2, StateImage.imageView, defaultSamplerLinear, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER );
+				writer.write_image( 2, XYZImage.imageView, defaultSamplerLinear, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER );
 				writer.update_set( device, BufferPresent.descriptorSet );
 			}
 
@@ -1035,7 +670,6 @@ void PrometheusInstance::initComputePasses () {
 
 			// and the actual compute dispatch for the simulation agents
 			vkCmdDispatch( cmd, ( drawExtent.width + 15 ) / 16, ( drawExtent.height + 15 ) / 16, 1 );
-			// vkCmdDispatch( cmd, FloatBufferResolution.width / 16, FloatBufferResolution.height / 16, 1 );
 		};
 	}
 }
