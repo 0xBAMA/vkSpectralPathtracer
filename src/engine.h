@@ -49,19 +49,15 @@ struct GlobalData {
 	glm::uvec2 floatBufferResolution;
 	glm::uvec2 presentBufferResolution;
 
-	uint32_t AgentGenSeed = 69420;
-	float AgentGenSpread;
+	glm::mat4 rotation{ 1.0f };
+	glm::mat4 inverseRotation{ 1.0f };
 
-	float decayRate = 0.9f;
-	float radius = 1.5f;
-
-	float brightnessScale = 0.001f;
+	int reset = 0;
 };
 
 // smallest scope CPU->GPU passing of information
 struct PushConstants {
 	uint32_t wangSeed;
-	int32_t operation = -1;
 };
 
 constexpr unsigned int FRAME_OVERLAP = 2;

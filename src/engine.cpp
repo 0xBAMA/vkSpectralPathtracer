@@ -98,10 +98,16 @@ void PrometheusInstance::Draw () {
 	// update the UBO
 	globalData.floatBufferResolution = glm::uvec2( RTBufferResolution.width, RTBufferResolution.height );
 	globalData.presentBufferResolution = glm::uvec2( drawExtent.width, drawExtent.height );
+	globalData.inverseRotation = glm::inverse( globalData.rotation ); // need to maintain this value because it's not updated in the event loop
 
 	// write directly from the memory on the PrometheusInstance
 	GlobalData* uniformData = ( GlobalData * ) GlobalUBO.allocation->GetMappedData();
 	*uniformData = globalData;
+
+	// reset the reset flag
+	if ( globalData.reset != 0 ) {
+		globalData.reset = 0;
+	}
 
 	// start the command buffer recording
 	VK_CHECK( vkBeginCommandBuffer( cmd, &cmdBeginInfo ) );
@@ -186,6 +192,38 @@ void PrometheusInstance::MainLoop () {
 				quit = true;
 			}
 
+			const uint8_t* kb = SDL_GetKeyboardState( NULL );
+			const float amount = SDL_GetModState() & KMOD_LSHIFT ? 0.1f : 0.01f;
+			if ( kb[ SDL_SCANCODE_RIGHT ] + kb[ SDL_SCANCODE_D ] != 0 ) {
+				globalData.rotation = glm::rotate( globalData.rotation, amount, glm::vec3( 0.0f, 1.0f, 0.0f ) );
+				globalData.reset = 1;
+			}
+			if ( kb[ SDL_SCANCODE_LEFT ] + kb[ SDL_SCANCODE_A ] != 0 ) {
+				globalData.rotation = glm::rotate( globalData.rotation, -amount, glm::vec3( 0.0f, 1.0f, 0.0f ) );
+				globalData.reset = 1;
+			}
+			if ( kb[ SDL_SCANCODE_UP ] + kb[ SDL_SCANCODE_W ] != 0 ) {
+				globalData.rotation = glm::rotate( globalData.rotation, amount, glm::vec3( 1.0f, 0.0f, 0.0f ) );
+				globalData.reset = 1;
+			}
+			if ( kb[ SDL_SCANCODE_DOWN ] + kb[ SDL_SCANCODE_S ] != 0 ) {
+				globalData.rotation = glm::rotate( globalData.rotation, -amount, glm::vec3( 1.0f, 0.0f, 0.0f ) );
+				globalData.reset = 1;
+			}
+			if ( kb[ SDL_SCANCODE_PAGEUP ] + kb[ SDL_SCANCODE_Q ] != 0 ) {
+				globalData.rotation = glm::rotate( globalData.rotation, -amount, glm::vec3( 0.0f, 0.0f, 1.0f ) );
+				globalData.reset = 1;
+			}
+			if ( kb[ SDL_SCANCODE_PAGEDOWN ] + kb[ SDL_SCANCODE_E ] != 0 ) {
+				globalData.rotation = glm::rotate( globalData.rotation, amount, glm::vec3( 0.0f, 0.0f, 1.0f ) );
+				globalData.reset = 1;
+			}
+			if ( kb[ SDL_SCANCODE_R ] != 0 ) {
+				globalData.rotation = glm::scale( globalData.rotation, glm::vec3( 0.9f ) );
+				globalData.reset = 1;
+			}
+
+
 			if ( e.type == SDL_WINDOWEVENT ) {
 				if ( e.window.event == SDL_WINDOWEVENT_MINIMIZED ) {
 					stopRendering = true;
@@ -214,7 +252,6 @@ void PrometheusInstance::MainLoop () {
 
 			if ( ImGui::Begin( "Edit" ) ) {
 				ImGui::SliderFloat( "Render Scale", &renderScale, 0.3f, 1.0f );
-				ImGui::SliderFloat( "Brightness", &globalData.brightnessScale, 0.0f, 1.0f, "%.7f", ImGuiSliderFlags_Logarithmic );
 
 				if ( ImGui::Button( "Add Preset" ) ) {
 					// add the new one

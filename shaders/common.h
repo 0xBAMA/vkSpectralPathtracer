@@ -3,11 +3,6 @@
 layout( push_constant ) uniform constants {
 // RNG seeding from the CPU
 	uint wangSeed;
-
-// specifying specific operations to be performed
-	// e.g. if I want to randomly seed the agent positions
-	int operation;
-
 } PushConstants;
 
 //=========================================================
@@ -17,28 +12,10 @@ layout( set = 0, binding = 0 ) uniform globalData {
 	uvec2 floatBufferResolution;
 	uvec2 presentBufferResolution;
 
-	// some initial usage here for base parameters + jitter
-		// this is used to specify small variation on a single "preset"
+	mat4 rotation;
+	mat4 inverseRotation;
 
-	/* some other parameterization lives here for when we want to reinit, like:
-
-		blur radius
-		decay rate
-		...
-
-	*/
-
-	// seeding the deterministic wang hash for each Agent
-	uint AgentGenSeed;
-	float AgentGenSpread;
-
-	// diffuse/decay parameterization
-	float decayRate;
-	float radius;
-
-	// visualizer config
-	float brightnessScale;
-
+	int reset;
 } GlobalData;
 //=========================================================
 
