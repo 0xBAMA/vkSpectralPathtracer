@@ -100,6 +100,7 @@ void PrometheusInstance::Draw () {
 	globalData.presentBufferResolution = glm::uvec2( drawExtent.width, drawExtent.height );
 	globalData.inverseRotation = glm::inverse( globalData.rotation ); // need to maintain this value because it's not updated in the event loop
 	globalData.aspectRatio = float( ImageBufferResolution.height ) / float( ImageBufferResolution.width );
+	globalData.frameNumber = frameNumber;
 
 	// write directly from the memory on the PrometheusInstance
 	GlobalData* uniformData = ( GlobalData * ) GlobalUBO.allocation->GetMappedData();

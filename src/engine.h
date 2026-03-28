@@ -52,6 +52,7 @@ struct GlobalData {
 	glm::mat4 rotation{ 1.0f };
 	glm::mat4 inverseRotation{ 1.0f };
 
+	int frameNumber;
 	int reset = 0;
 	float aspectRatio;
 };

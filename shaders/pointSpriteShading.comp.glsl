@@ -29,8 +29,9 @@ void main () {
 	// store the image
 	if ( idVal != 0 ) {
 		vec4 col = vec4( 1.0f );
-		col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() ) * depth;
-	//	col.rgb = vec3( depth );
+//		col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() ) * depth;
+
+		col.rgb = vec3( depth );
 	//	col.rgb = vec3( center );
 	//	col.rgb = vec3( 1.0f / radius );
 

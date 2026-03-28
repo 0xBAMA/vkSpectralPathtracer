@@ -15,6 +15,7 @@ layout( set = 0, binding = 0 ) uniform globalData {
 	mat4 rotation;
 	mat4 inverseRotation;
 
+	int frameNumber;
 	int reset;
 	float aspectRatio;
 } GlobalData;
