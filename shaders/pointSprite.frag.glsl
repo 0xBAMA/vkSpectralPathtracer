@@ -31,8 +31,8 @@ void main () {
 
 	// so we can calculate a worldspace position here...
 	vec3 fragNormal = vec3( centered, sphereHeightSample );
-	vec3 worldspacePos = center + fragNormal * ( radius / 1000.0f );
-	gl_FragDepth =  worldspacePos.z;
+	vec3 worldspacePos = center + fragNormal * ( radius / float( GlobalData.floatBufferResolution ) );
+	gl_FragDepth = worldspacePos.z;
 
 	outFragID = index;
 }

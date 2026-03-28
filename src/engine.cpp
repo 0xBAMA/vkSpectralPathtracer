@@ -96,9 +96,10 @@ void PrometheusInstance::Draw () {
 	drawExtent.width = uint32_t( std::min( swapchainExtent.width, drawImage.imageExtent.width ) * renderScale );
 
 	// update the UBO
-	globalData.floatBufferResolution = glm::uvec2( RTBufferResolution.width, RTBufferResolution.height );
+	globalData.floatBufferResolution = glm::uvec2( ImageBufferResolution.width, ImageBufferResolution.height );
 	globalData.presentBufferResolution = glm::uvec2( drawExtent.width, drawExtent.height );
 	globalData.inverseRotation = glm::inverse( globalData.rotation ); // need to maintain this value because it's not updated in the event loop
+	globalData.aspectRatio = float( ImageBufferResolution.height ) / float( ImageBufferResolution.width );
 
 	// write directly from the memory on the PrometheusInstance
 	GlobalData* uniformData = ( GlobalData * ) GlobalUBO.allocation->GetMappedData();
@@ -512,12 +513,12 @@ void PrometheusInstance::initResources () {
 	GlobalUBO = createBuffer( sizeof( GlobalData ), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU );
 
 	// create the accumulator texture
-	VkExtent3D bufferExtent = { RTBufferResolution.width, RTBufferResolution.height, 1 };
+	VkExtent3D bufferExtent = { ImageBufferResolution.width, ImageBufferResolution.height, 1 };
 	XYZImage = createImage( bufferExtent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT );
 
 	// create the raster attachments
-	pointSpriteColorAttachment = createImage( { pointSpriteRasterResolution.width, pointSpriteRasterResolution.height, 1 }, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT );
-	pointSpriteDepthAttachment = createImage( { pointSpriteRasterResolution.width, pointSpriteRasterResolution.height, 1 }, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT );
+	pointSpriteColorAttachment = createImage( { ImageBufferResolution.width, ImageBufferResolution.height, 1 }, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT );
+	pointSpriteDepthAttachment = createImage( { ImageBufferResolution.width, ImageBufferResolution.height, 1 }, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT );
 
 	// make sure to clean up at the end
 	mainDeletionQueue.push_function([ & ] () {
@@ -533,7 +534,7 @@ void PrometheusInstance::initResources () {
 
 void PrometheusInstance::initComputePasses () {
 
-	{ // Agent Update
+	{ // Raytrace update
 		{ // descriptor layout
 			DescriptorLayoutBuilder builder;
 			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
@@ -609,7 +610,7 @@ void PrometheusInstance::initComputePasses () {
 			vkCmdPushConstants( cmd, Raytrace.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &Raytrace.pushConstants );
 
 			// dispatch for all the pixels
-			vkCmdDispatch( cmd, RTBufferResolution.width / 16, RTBufferResolution.height / 16, 1 );
+			vkCmdDispatch( cmd, ImageBufferResolution.width / 16, ImageBufferResolution.height / 16, 1 );
 
 			// also needs to include access barrier for the resolve image
 			VkImageMemoryBarrier2 barrier {
@@ -715,7 +716,7 @@ void PrometheusInstance::initComputePasses () {
 			// VkRenderingAttachmentInfo depthAttachment = vkinit::depth_attachment_info( pointSpriteDepthAttachment.imageView, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL );
 			VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info( pointSpriteColorAttachment.imageView, &clearColor, VK_IMAGE_LAYOUT_GENERAL );
 			VkRenderingAttachmentInfo depthAttachment = vkinit::depth_attachment_info( pointSpriteDepthAttachment.imageView, VK_IMAGE_LAYOUT_GENERAL );
-			VkRenderingInfo renderInfo = vkinit::rendering_info( pointSpriteRasterResolution, &colorAttachment, &depthAttachment );
+			VkRenderingInfo renderInfo = vkinit::rendering_info( ImageBufferResolution, &colorAttachment, &depthAttachment );
 
 			vkCmdBeginRendering( cmd, &renderInfo );
 			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pointSpriteRaster.pipeline );
@@ -734,8 +735,8 @@ void PrometheusInstance::initComputePasses () {
 			VkViewport viewport = {};
 			viewport.x = 0;
 			viewport.y = 0;
-			viewport.width = float( pointSpriteRasterResolution.width );
-			viewport.height = float( pointSpriteRasterResolution.height );
+			viewport.width = float( ImageBufferResolution.width );
+			viewport.height = float( ImageBufferResolution.height );
 			viewport.minDepth = 0.0f;
 			viewport.maxDepth = 1.0f;
 			vkCmdSetViewport( cmd, 0, 1, &viewport );
@@ -743,8 +744,8 @@ void PrometheusInstance::initComputePasses () {
 			VkRect2D scissor = {};
 			scissor.offset.x = 0;
 			scissor.offset.y = 0;
-			scissor.extent.width = pointSpriteRasterResolution.width;
-			scissor.extent.height = pointSpriteRasterResolution.height;
+			scissor.extent.width = ImageBufferResolution.width;
+			scissor.extent.height = ImageBufferResolution.height;
 			vkCmdSetScissor( cmd, 0, 1, &scissor );
 
 			// draw all the agents as points

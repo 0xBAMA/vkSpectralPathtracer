@@ -53,6 +53,7 @@ struct GlobalData {
 	glm::mat4 inverseRotation{ 1.0f };
 
 	int reset = 0;
+	float aspectRatio;
 };
 
 // smallest scope CPU->GPU passing of information
@@ -104,7 +105,7 @@ public:
 	GlobalData globalData; // goes into the UBO
 
 	// the simulation buffer resolution
-	VkExtent2D RTBufferResolution{ 1280, 720 };
+	VkExtent2D ImageBufferResolution{ 1280, 720 };
 	AllocatedImage XYZImage;
 
 	// wrapping the compute passes which are involved
@@ -113,7 +114,6 @@ public:
 
 	// abusing the ComputeEffect struct for a raster pipeline
 	uint32_t numPointSprites = 100000;
-	VkExtent2D pointSpriteRasterResolution{ 1000, 500 };
 	AllocatedImage pointSpriteColorAttachment;
 	AllocatedImage pointSpriteDepthAttachment;
 	ComputeEffect pointSpriteRaster;
