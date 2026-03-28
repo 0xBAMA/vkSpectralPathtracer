@@ -509,6 +509,10 @@ void PrometheusInstance::initResources () {
 	VkExtent3D bufferExtent = { RTBufferResolution.width, RTBufferResolution.height, 1 };
 	XYZImage = createImage( bufferExtent, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT );
 
+	// create the raster attachments
+	pointSpriteColorAttachment = createImage( { pointSpriteRasterResolution.width, pointSpriteRasterResolution.height, 1 }, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT );
+	pointSpriteDepthAttachment = createImage( { pointSpriteRasterResolution.width, pointSpriteRasterResolution.height, 1 }, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT );
+
 	// make sure to clean up at the end
 	mainDeletionQueue.push_function([ & ] () {
 		// destroying buffers
@@ -516,6 +520,8 @@ void PrometheusInstance::initResources () {
 
 		// destroying images
 		destroyImage( XYZImage );
+		destroyImage( pointSpriteColorAttachment );
+		destroyImage( pointSpriteDepthAttachment );
 	});
 }
 

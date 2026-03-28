@@ -111,6 +111,8 @@ public:
 	ComputeEffect Raytrace;
 	ComputeEffect BufferPresent;
 
+	AllocatedImage pointSpriteColorAttachment;
+	AllocatedImage pointSpriteDepthAttachment;
 	// engine triggers
 	bool resizeRequest { false };
 	bool isInitialized { false };
