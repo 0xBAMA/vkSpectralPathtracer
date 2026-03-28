@@ -117,6 +117,7 @@ public:
 	AllocatedImage pointSpriteColorAttachment;
 	AllocatedImage pointSpriteDepthAttachment;
 	ComputeEffect pointSpriteRaster;
+	ComputeEffect pointSpriteDeferredShading;
 
 	// engine triggers
 	bool resizeRequest { false };

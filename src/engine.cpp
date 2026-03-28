@@ -125,6 +125,7 @@ void PrometheusInstance::Draw () {
 	// Raytrace.invoke( cmd );
 
 	pointSpriteRaster.invoke( cmd );
+	pointSpriteDeferredShading.invoke( cmd );
 
 	// compute shader to put the resolved final image into the drawImage...
 	BufferPresent.invoke( cmd );
@@ -802,6 +803,119 @@ void PrometheusInstance::initComputePasses () {
 			};
 
 			vkCmdPipelineBarrier2( cmd, &barrierDependency );
+		};
+	}
+
+	{ // Deferred shading for the point sprites
+		{ // descriptor layout
+			DescriptorLayoutBuilder builder;
+			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
+			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ); // Color Attachment
+			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ); // Depth Attachment
+			builder.add_binding( 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // shaded image
+			pointSpriteDeferredShading.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
+		}
+
+		{ // pipeline layout + compute pipeline
+			VkPushConstantRange pushConstant{};
+			pushConstant.offset = 0;
+			pushConstant.size = sizeof( PushConstants );
+			pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+			VkPipelineLayoutCreateInfo computeLayout{};
+			computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+			computeLayout.pNext = nullptr;
+			computeLayout.pSetLayouts = &pointSpriteDeferredShading.descriptorSetLayout;
+			computeLayout.setLayoutCount = 1;
+			computeLayout.pPushConstantRanges = &pushConstant;
+			computeLayout.pushConstantRangeCount = 1;
+
+			VK_CHECK( vkCreatePipelineLayout( device, &computeLayout, nullptr, &pointSpriteDeferredShading.pipelineLayout ) );
+
+			VkShaderModule deferredShader;
+			if ( !vkutil::load_shader_module("../shaders/pointSpriteShading.comp.glsl.spv", device, &deferredShader ) ) {
+				fmt::print( "Error when building the Point Sprite Deferred Shading Compute Shader\n" );
+			}
+
+			VkPipelineShaderStageCreateInfo stageinfo{};
+			stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+			stageinfo.pNext = nullptr;
+			stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+			stageinfo.module = deferredShader;
+			stageinfo.pName = "main";
+
+			VkComputePipelineCreateInfo computePipelineCreateInfo{};
+			computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+			computePipelineCreateInfo.pNext = nullptr;
+			computePipelineCreateInfo.layout = pointSpriteDeferredShading.pipelineLayout;
+			computePipelineCreateInfo.stage = stageinfo;
+
+			VK_CHECK( vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &pointSpriteDeferredShading.pipeline ) );
+			vkDestroyShaderModule( device, deferredShader, nullptr );
+
+			// deletors for the pipeline layout + pipeline
+			mainDeletionQueue.push_function( [ & ] () {
+				vkDestroyDescriptorSetLayout( device, pointSpriteDeferredShading.descriptorSetLayout, nullptr );
+				vkDestroyPipelineLayout( device, pointSpriteDeferredShading.pipelineLayout, nullptr );
+				vkDestroyPipeline( device, pointSpriteDeferredShading.pipeline, nullptr );
+			});
+		}
+
+		// invoke() lambda
+		pointSpriteDeferredShading.invoke = [ & ]( VkCommandBuffer cmd ) {
+			pointSpriteDeferredShading.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, pointSpriteDeferredShading.descriptorSetLayout );
+			{
+				DescriptorWriter writer;
+				writer.write_buffer( 0, GlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
+				writer.write_image( 1, pointSpriteColorAttachment.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER );
+				writer.write_image( 2, pointSpriteDepthAttachment.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER );
+				writer.write_image( 3, XYZImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
+				writer.update_set( device, pointSpriteDeferredShading.descriptorSet );
+			}
+
+			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pointSpriteDeferredShading.pipeline );
+
+			// bind the descriptor set, as just recorded
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pointSpriteDeferredShading.pipelineLayout, 0, 1, &pointSpriteDeferredShading.descriptorSet, 0, nullptr );
+
+			// get a new wang RNG seed
+			pointSpriteDeferredShading.pushConstants.wangSeed = genWangSeed();
+
+			// send the current value of the push constants
+			vkCmdPushConstants( cmd, pointSpriteDeferredShading.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &pointSpriteDeferredShading.pushConstants );
+
+			// and the actual compute dispatch for the simulation agents
+			vkCmdDispatch( cmd, ( ImageBufferResolution.width + 15 ) / 16, ( ImageBufferResolution.height + 15 ) / 16, 1 );
+
+			/*
+			// also needs to include access barrier for the resolve image
+			VkImageMemoryBarrier2 barrier {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+
+				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+
+				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+				.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+
+				// now the blur has finished, we are using the filtered reads until the next agent raster
+				.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+
+				.image = XYZImage.image,
+				.subresourceRange = {
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
+				}
+			};
+
+			VkDependencyInfo barrierDependency {
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.imageMemoryBarrierCount = 1,
+				.pImageMemoryBarriers = &barrier
+			};
+
+			vkCmdPipelineBarrier2( cmd, &barrierDependency );
+			*/
 		};
 	}
 

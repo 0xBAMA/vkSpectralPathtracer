@@ -1,0 +1,37 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_buffer_reference : require
+
+layout ( local_size_x = 16, local_size_y = 16 ) in;
+
+#include "common.h"
+#include "random.h"
+
+layout ( set = 0, binding = 1 ) uniform usampler2D colorAttachment;
+layout ( set = 0, binding = 2 ) uniform sampler2D depthAttachment;
+layout ( rgba32f, set = 0, binding = 3 ) uniform image2D image;
+
+void main () {
+	// Computing a UV for the texture sampling operation
+	// vec2 loc = ( gl_GlobalInvocationID.xy + vec2( 0.5f ) ) / imageSize( image ).xy;
+	ivec2 loc = ivec2( gl_GlobalInvocationID.xy );
+
+	// raster attachments
+	const uint seedVal = texelFetch( colorAttachment, loc, 0 ).r;
+	const float depth = texelFetch( depthAttachment, loc, 0 ).r;
+
+// recovering the deterministic rng
+	seed = seedVal;
+	float radius = 5.0f * NormalizedRandomFloat() + 3.0f;
+	vec3 center = vec3( NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() / 2.0f ) * 1.618f;
+
+	// store the image
+	vec4 col = vec4( 1.0f );
+	col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() );
+//	col.rgb = vec3( depth );
+//	col.rgb = vec3( center );
+//	col.rgb = vec3( 1.0f / radius );
+
+	imageStore( image, loc, col );
+}
