@@ -116,8 +116,14 @@ void PrometheusInstance::Draw () {
 	vkutil::transition_image( cmd, XYZImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL );
 	vkutil::transition_image( cmd, drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL );
 
+	// and the point sprite raster stuff
+	vkutil::transition_image( cmd, pointSpriteColorAttachment.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+	vkutil::transition_image( cmd, pointSpriteDepthAttachment.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL );
+
 	// compute shader to do one update of the raytrace process
-	Raytrace.invoke( cmd );
+	// Raytrace.invoke( cmd );
+
+	pointSpriteRaster.invoke( cmd );
 
 	// compute shader to put the resolved final image into the drawImage...
 	BufferPresent.invoke( cmd );
@@ -501,7 +507,7 @@ void PrometheusInstance::initDescriptors  () {
 }
 
 void PrometheusInstance::initResources () {
-// API resource allocation:
+	// API resource allocation:
 	// create the buffer for the UBO
 	GlobalUBO = createBuffer( sizeof( GlobalData ), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU );
 
@@ -629,6 +635,169 @@ void PrometheusInstance::initComputePasses () {
 				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
 				.imageMemoryBarrierCount = 1,
 				.pImageMemoryBarriers = &barrier
+			};
+
+			vkCmdPipelineBarrier2( cmd, &barrierDependency );
+		};
+	}
+
+	{ // trying to setup the point sprites
+
+		{ // descriptor layout
+			// we're eventually going to just want 32-bit uint IDs out of this process, but for now I think color makes sense...
+				// we of course also need depth for the z-testing.
+
+			// Color and Depth Attachments are part of the rendering state, and are not specified as part of the descriptor set or descriptor set layout
+
+			DescriptorLayoutBuilder builder;
+			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
+			pointSpriteRaster.descriptorSetLayout = builder.build( device,  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT );
+		}
+
+		{ // pipeline layout + pipeline build
+			VkPushConstantRange pushConstant{};
+			pushConstant.offset = 0;
+			pushConstant.size = sizeof( PushConstants );
+			pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+
+			VkPipelineLayoutCreateInfo rasterLayout{};
+			rasterLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+			rasterLayout.pNext = nullptr;
+			rasterLayout.pSetLayouts = &pointSpriteRaster.descriptorSetLayout;
+			rasterLayout.setLayoutCount = 1;
+			rasterLayout.pPushConstantRanges = &pushConstant;
+			rasterLayout.pushConstantRangeCount = 1;
+
+			VK_CHECK( vkCreatePipelineLayout( device, &rasterLayout, nullptr, &pointSpriteRaster.pipelineLayout ) );
+
+			VkShaderModule pointSpriteFragShader;
+			if ( !vkutil::load_shader_module( "../shaders/pointSprite.frag.glsl.spv", device, &pointSpriteFragShader ) ) {
+				fmt::print( "Error when building the Agent Raster fragment shader module\n" );
+			} else {
+				fmt::print( "Agent Raster fragment shader successfully loaded\n" );
+			}
+
+			VkShaderModule pointSpriteVertexShader;
+			if ( !vkutil::load_shader_module( "../shaders/pointSprite.vert.glsl.spv", device, &pointSpriteVertexShader ) ) {
+				fmt::print( "Error when building the Agent Raster vertex shader module\n" );
+			} else {
+				fmt::print( "Agent Raster vertex shader successfully loaded\n" );
+			}
+
+			PipelineBuilder pipelineBuilder;
+			pipelineBuilder._pipelineLayout = pointSpriteRaster.pipelineLayout;
+			pipelineBuilder.set_shaders( pointSpriteVertexShader, pointSpriteFragShader );
+			pipelineBuilder.set_input_topology( VK_PRIMITIVE_TOPOLOGY_POINT_LIST );
+			pipelineBuilder.set_polygon_mode( VK_POLYGON_MODE_FILL );
+			pipelineBuilder.set_cull_mode( VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE );
+			pipelineBuilder.set_multisampling_none();
+			pipelineBuilder.disable_blending();
+			pipelineBuilder.enable_depthtest( true, VK_COMPARE_OP_GREATER_OR_EQUAL );
+			pipelineBuilder.set_color_attachment_format( pointSpriteColorAttachment.imageFormat );
+			pipelineBuilder.set_depth_format( pointSpriteDepthAttachment.imageFormat );
+			pointSpriteRaster.pipeline = pipelineBuilder.build_pipeline( device );
+
+			// cleanup
+			vkDestroyShaderModule( device, pointSpriteFragShader, nullptr );
+			vkDestroyShaderModule( device, pointSpriteVertexShader, nullptr );
+
+			mainDeletionQueue.push_function( [ & ] ()  {
+				vkDestroyDescriptorSetLayout( device, pointSpriteRaster.descriptorSetLayout, nullptr );
+				vkDestroyPipeline( device, pointSpriteRaster.pipeline, nullptr );
+				vkDestroyPipelineLayout( device, pointSpriteRaster.pipelineLayout, nullptr );
+			});
+		}
+
+		pointSpriteRaster.invoke = [ & ] ( VkCommandBuffer cmd ) {
+			// additive raster for the agent locations
+			VkClearValue clearColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+			// VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info( pointSpriteColorAttachment.imageView, &clearColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
+			// VkRenderingAttachmentInfo depthAttachment = vkinit::depth_attachment_info( pointSpriteDepthAttachment.imageView, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL );
+			VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info( pointSpriteColorAttachment.imageView, &clearColor, VK_IMAGE_LAYOUT_GENERAL );
+			VkRenderingAttachmentInfo depthAttachment = vkinit::depth_attachment_info( pointSpriteDepthAttachment.imageView, VK_IMAGE_LAYOUT_GENERAL );
+			VkRenderingInfo renderInfo = vkinit::rendering_info( pointSpriteRasterResolution, &colorAttachment, &depthAttachment );
+
+			vkCmdBeginRendering( cmd, &renderInfo );
+			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pointSpriteRaster.pipeline );
+
+			// dynamic descriptor allocation, to bind a texture
+			pointSpriteRaster.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, pointSpriteRaster.descriptorSetLayout );
+			{
+				DescriptorWriter writer;
+				writer.write_buffer( 0, GlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
+				writer.update_set( device, pointSpriteRaster.descriptorSet );
+			}
+
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pointSpriteRaster.pipelineLayout, 0, 1, &pointSpriteRaster.descriptorSet, 0, nullptr );
+
+			//set dynamic viewport and scissor
+			VkViewport viewport = {};
+			viewport.x = 0;
+			viewport.y = 0;
+			viewport.width = float( pointSpriteRasterResolution.width );
+			viewport.height = float( pointSpriteRasterResolution.height );
+			viewport.minDepth = 0.0f;
+			viewport.maxDepth = 1.0f;
+			vkCmdSetViewport( cmd, 0, 1, &viewport );
+
+			VkRect2D scissor = {};
+			scissor.offset.x = 0;
+			scissor.offset.y = 0;
+			scissor.extent.width = pointSpriteRasterResolution.width;
+			scissor.extent.height = pointSpriteRasterResolution.height;
+			vkCmdSetScissor( cmd, 0, 1, &scissor );
+
+			// draw all the agents as points
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,  pointSpriteRaster.pipelineLayout, 0, 1, &pointSpriteRaster.descriptorSet, 0, nullptr );
+			vkCmdPushConstants( cmd, pointSpriteRaster.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &pointSpriteRaster.pushConstants );
+
+			// launch a draw command to do the fullscreen triangle
+			vkCmdDraw( cmd, numPointSprites, 1, 0, 0 );
+			vkCmdEndRendering( cmd );
+
+			VkImageMemoryBarrier2 barrierC {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+
+				.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+
+				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+				.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+
+				// now the blur has finished, we are using the filtered reads until the next agent raster
+				.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+
+				.image = pointSpriteColorAttachment.image,
+				.subresourceRange = {
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
+				}
+			};
+
+			VkImageMemoryBarrier2 barrierD {
+				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+
+				.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+
+				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+				.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+
+				// now the blur has finished, we are using the filtered reads until the next agent raster
+				.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+
+				.image = pointSpriteDepthAttachment.image,
+				.subresourceRange = {
+					VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1
+				}
+			};
+
+			VkImageMemoryBarrier2 barriers[] = { barrierC, barrierD };
+			VkDependencyInfo barrierDependency {
+				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.imageMemoryBarrierCount = 2,
+				.pImageMemoryBarriers = barriers
 			};
 
 			vkCmdPipelineBarrier2( cmd, &barrierDependency );

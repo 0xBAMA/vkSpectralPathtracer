@@ -111,8 +111,13 @@ public:
 	ComputeEffect Raytrace;
 	ComputeEffect BufferPresent;
 
+	// abusing the ComputeEffect struct for a raster pipeline
+	uint32_t numPointSprites = 100000;
+	VkExtent2D pointSpriteRasterResolution{ 1000, 500 };
 	AllocatedImage pointSpriteColorAttachment;
 	AllocatedImage pointSpriteDepthAttachment;
+	ComputeEffect pointSpriteRaster;
+
 	// engine triggers
 	bool resizeRequest { false };
 	bool isInitialized { false };
