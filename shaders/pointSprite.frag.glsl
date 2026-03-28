@@ -34,5 +34,5 @@ void main () {
 	vec3 worldspacePos = center + fragNormal * ( radius / float( GlobalData.floatBufferResolution ) );
 	gl_FragDepth = worldspacePos.z;
 
-	outFragID = index;
+	outFragID = index + 1;
 }

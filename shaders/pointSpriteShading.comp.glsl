@@ -18,20 +18,22 @@ void main () {
 	ivec2 loc = ivec2( gl_GlobalInvocationID.xy );
 
 	// raster attachments
-	const uint seedVal = texelFetch( colorAttachment, loc, 0 ).r;
+	const uint idVal = texelFetch( colorAttachment, loc, 0 ).r;
 	const float depth = texelFetch( depthAttachment, loc, 0 ).r;
 
 // recovering the deterministic rng
-	seed = seedVal;
+	seed = idVal - 1;
 	float radius = 5.0f * NormalizedRandomFloat() + 3.0f;
 	vec3 center = vec3( NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() / 2.0f ) * 1.618f;
 
 	// store the image
-	vec4 col = vec4( 1.0f );
-	col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() );
-//	col.rgb = vec3( depth );
-//	col.rgb = vec3( center );
-//	col.rgb = vec3( 1.0f / radius );
+	if ( idVal != 0 ) {
+		vec4 col = vec4( 1.0f );
+		col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() ) * depth;
+	//	col.rgb = vec3( depth );
+	//	col.rgb = vec3( center );
+	//	col.rgb = vec3( 1.0f / radius );
 
-	imageStore( image, loc, col );
+		imageStore( image, loc, col );
+	}
 }
