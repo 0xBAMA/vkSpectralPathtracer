@@ -24,7 +24,7 @@ void main () {
 // recovering the deterministic rng
 	seed = idVal - 1;
 	float radius = 5.0f * NormalizedRandomFloat() + 3.0f;
-	vec3 center = vec3( NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() / 2.0f ) * 1.618f;
+	vec3 center = vec3( ( NormalizedRandomFloat() - 0.5f ) / GlobalData.aspectRatio, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() / 2.0f ) * 1.618f;
 
 	// store the image
 	if ( idVal != 0 ) {

@@ -19,7 +19,7 @@ void main () {
 	radius = gl_PointSize = 5.0f * NormalizedRandomFloat() + 3.0f;
 
 	// similar, for position
-	center = vec3( NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() / 2.0f ) * 1.618f;
+	center = vec3( ( NormalizedRandomFloat() - 0.5f ) / GlobalData.aspectRatio, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() / 2.0f ) * 1.918f;
 	center.x *= GlobalData.aspectRatio;
 
 	// writing the point locations
