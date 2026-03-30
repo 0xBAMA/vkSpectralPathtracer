@@ -27,14 +27,14 @@ void main () {
 	vec3 center = vec3( ( NormalizedRandomFloat() - 0.5f ) / GlobalData.aspectRatio, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() / 2.0f ) * 1.618f;
 
 	// store the image
+	vec4 col = vec4( 1.0f );
 	if ( idVal != 0 ) {
-		vec4 col = vec4( 1.0f );
-//		col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() ) * depth;
-
-		col.rgb = vec3( depth );
+		col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() ) * depth;
+//		col.rgb = vec3( depth );
 	//	col.rgb = vec3( center );
 	//	col.rgb = vec3( 1.0f / radius );
-
-		imageStore( image, loc, col );
+	} else {
+		col.rgb = vec3( 0.0f );
 	}
+	imageStore( image, loc, col );
 }
