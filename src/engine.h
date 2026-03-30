@@ -44,6 +44,13 @@ struct frameData_t {
 	DescriptorAllocatorGrowable frameDescriptors;
 };
 
+struct pointState {
+	glm::vec4 position;
+	glm::vec4 velocity;
+	glm::vec4 acceleration;
+	glm::vec4 mass; // mass + padding
+};
+
 // common configuration across all shaders
 struct GlobalData {
 	glm::uvec2 floatBufferResolution;
@@ -55,6 +62,7 @@ struct GlobalData {
 	int frameNumber;
 	int reset = 0;
 	float aspectRatio;
+	int numPoints;
 };
 
 // smallest scope CPU->GPU passing of information
@@ -114,11 +122,17 @@ public:
 	ComputeEffect BufferPresent;
 
 	// abusing the ComputeEffect struct for a raster pipeline
-	uint32_t numPointSprites = 100000;
+	uint32_t numPointSprites = 16 * 100;
 	AllocatedImage pointSpriteColorAttachment;
 	AllocatedImage pointSpriteDepthAttachment;
 	ComputeEffect pointSpriteRaster;
 	ComputeEffect pointSpriteDeferredShading;
+
+	// for the N body simulation
+	AllocatedBuffer ForceBuffer;
+	AllocatedBuffer PointBuffer;
+	ComputeEffect nbodyForceUpdate;
+	ComputeEffect nbodyAccelUpdate;
 
 	// engine triggers
 	bool resizeRequest { false };

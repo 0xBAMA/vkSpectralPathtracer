@@ -18,6 +18,7 @@ layout( set = 0, binding = 0 ) uniform globalData {
 	int frameNumber;
 	int reset;
 	float aspectRatio;
+	int numPoints;
 } GlobalData;
 //=========================================================
 
