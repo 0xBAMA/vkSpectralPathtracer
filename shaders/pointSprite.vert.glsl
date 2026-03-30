@@ -28,7 +28,7 @@ void main () {
 
 	// placeholder, deterministic random
 //	radius = gl_PointSize = 5.0f * NormalizedRandomFloat() + 5.0f + 3.0f * sin( 0.01f * GlobalData.frameNumber );
-	radius = gl_PointSize = points[ index ].mass.x;
+	radius = gl_PointSize = sqrt( points[ index ].mass.x ) / 5.0f + 2.0f;
 
 	// similar, for position
 //	center = vec3( ( NormalizedRandomFloat() - 0.5f ) / GlobalData.aspectRatio, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() / 4.0f + 0.2f + 0.1f * sin( 0.01f * GlobalData.frameNumber + gl_VertexIndex ) ) * 1.918f;
