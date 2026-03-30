@@ -95,13 +95,15 @@ void PrometheusInstance::Draw () {
 	drawExtent.height = uint32_t( std::min( swapchainExtent.height, drawImage.imageExtent.height ) * renderScale );
 	drawExtent.width = uint32_t( std::min( swapchainExtent.width, drawImage.imageExtent.width ) * renderScale );
 
-	// update the UBO
+	// update the UBO contents
 	globalData.floatBufferResolution = glm::uvec2( ImageBufferResolution.width, ImageBufferResolution.height );
 	globalData.presentBufferResolution = glm::uvec2( drawExtent.width, drawExtent.height );
 	globalData.inverseRotation = glm::inverse( globalData.rotation ); // need to maintain this value because it's not updated in the event loop
 	globalData.aspectRatio = float( ImageBufferResolution.height ) / float( ImageBufferResolution.width );
+	globalData.invAspectRatio = float( ImageBufferResolution.width ) / float( ImageBufferResolution.height );
 	globalData.frameNumber = frameNumber;
 	globalData.numPoints = numPointSprites;
+	globalData.numForces = numPointSprites * ( numPointSprites + 1 ) / 2;
 
 	// write directly from the memory on the PrometheusInstance
 	GlobalData* uniformData = ( GlobalData * ) GlobalUBO.allocation->GetMappedData();
@@ -127,6 +129,7 @@ void PrometheusInstance::Draw () {
 	// Raytrace.invoke( cmd );
 
 	// updating the positions of the points
+	nbodyForceUpdate.invoke( cmd );
 	nbodyAccelUpdate.invoke( cmd );
 
 	pointSpriteRaster.invoke( cmd );
@@ -527,13 +530,16 @@ void PrometheusInstance::initResources () {
 	pointSpriteDepthAttachment = createImage( { ImageBufferResolution.width, ImageBufferResolution.height, 1 }, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT );
 
 	// buffers associated with the point sprites
+	numForces = ( numPointSprites * ( numPointSprites - 1 ) ) / 2;
 	PointBuffer = createBuffer( numPointSprites * sizeof( pointState ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY );
+	ForceBuffer = createBuffer( numForces * sizeof( glm::vec4 ), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY );
 
 	// make sure to clean up at the end
 	mainDeletionQueue.push_function([ & ] () {
 		// destroying buffers
 		destroyBuffer( GlobalUBO );
 		destroyBuffer( PointBuffer );
+		destroyBuffer( ForceBuffer );
 
 		// destroying images
 		destroyImage( XYZImage );
@@ -544,13 +550,13 @@ void PrometheusInstance::initResources () {
 
 void PrometheusInstance::initComputePasses () {
 
-	/*
-	{ // Force Update
+	{ // Force  Update
 		{ // descriptor layout
 			DescriptorLayoutBuilder builder;
 			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
-			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ); // the XYZ accumulator
-			Raytrace.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
+			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ); // the SSBO with body locations
+			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ); // the SSBO with the body-to-body forces
+			nbodyForceUpdate.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
 		}
 
 		{ // pipeline layout + compute pipeline
@@ -562,70 +568,71 @@ void PrometheusInstance::initComputePasses () {
 			VkPipelineLayoutCreateInfo computeLayout{};
 			computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 			computeLayout.pNext = nullptr;
-			computeLayout.pSetLayouts = &Raytrace.descriptorSetLayout;
+			computeLayout.pSetLayouts = &nbodyForceUpdate.descriptorSetLayout;
 			computeLayout.setLayoutCount = 1;
 			computeLayout.pPushConstantRanges = &pushConstant;
 			computeLayout.pushConstantRangeCount = 1;
 
-			VK_CHECK( vkCreatePipelineLayout( device, &computeLayout, nullptr, &Raytrace.pipelineLayout ) );
+			VK_CHECK( vkCreatePipelineLayout( device, &computeLayout, nullptr, &nbodyForceUpdate.pipelineLayout ) );
 
-			VkShaderModule RaytraceShader;
-			if ( !vkutil::load_shader_module("../shaders/raytrace.comp.glsl.spv", device, &RaytraceShader ) ) {
-				fmt::print( "Error when building the Raytrace Compute Shader\n" );
+			VkShaderModule ForceUpdateShader;
+			if ( !vkutil::load_shader_module("../shaders/forceUpdate.comp.glsl.spv", device, &ForceUpdateShader ) ) {
+				fmt::print( "Error when building the Point Update Compute Shader\n" );
 			}
 
 			VkPipelineShaderStageCreateInfo stageinfo{};
 			stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			stageinfo.pNext = nullptr;
 			stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-			stageinfo.module = RaytraceShader;
+			stageinfo.module = ForceUpdateShader;
 			stageinfo.pName = "main";
 
 			VkComputePipelineCreateInfo computePipelineCreateInfo{};
 			computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
 			computePipelineCreateInfo.pNext = nullptr;
-			computePipelineCreateInfo.layout = Raytrace.pipelineLayout;
+			computePipelineCreateInfo.layout = nbodyForceUpdate.pipelineLayout;
 			computePipelineCreateInfo.stage = stageinfo;
 
-			VK_CHECK( vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &Raytrace.pipeline ) );
-			vkDestroyShaderModule( device, RaytraceShader, nullptr );
+			VK_CHECK( vkCreateComputePipelines( device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &nbodyForceUpdate.pipeline ) );
+			vkDestroyShaderModule( device, ForceUpdateShader, nullptr );
 
 			// deletors for the pipeline layout + pipeline
 			mainDeletionQueue.push_function( [ & ] () {
-				vkDestroyDescriptorSetLayout( device, Raytrace.descriptorSetLayout, nullptr );
-				vkDestroyPipelineLayout( device, Raytrace.pipelineLayout, nullptr );
-				vkDestroyPipeline( device, Raytrace.pipeline, nullptr );
+				vkDestroyDescriptorSetLayout( device, nbodyForceUpdate.descriptorSetLayout, nullptr );
+				vkDestroyPipelineLayout( device, nbodyForceUpdate.pipelineLayout, nullptr );
+				vkDestroyPipeline( device, nbodyForceUpdate.pipeline, nullptr );
 			});
 		}
 
 		// invoke() lambda
-		Raytrace.invoke = [ & ] ( VkCommandBuffer cmd ){
+		nbodyForceUpdate.invoke = [ & ] ( VkCommandBuffer cmd ){
 			// dynamic descriptor allocation, to bind a texture
-			Raytrace.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, Raytrace.descriptorSetLayout );
+			nbodyForceUpdate.descriptorSet = getCurrentFrame().frameDescriptors.allocate( device, nbodyForceUpdate.descriptorSetLayout );
 			{
 				DescriptorWriter writer;
 				writer.write_buffer( 0, GlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
-				writer.write_image( 1, XYZImage.imageView, defaultSamplerNearest, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE );
-				writer.update_set( device, Raytrace.descriptorSet );
+				writer.write_buffer( 1, PointBuffer.buffer, numPointSprites * sizeof( pointState ), 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER );
+				writer.write_buffer( 2, ForceBuffer.buffer, numForces * sizeof( glm::vec4 ), 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER );
+				writer.update_set( device, nbodyForceUpdate.descriptorSet );
 			}
 
-			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, Raytrace.pipeline );
+			vkCmdBindPipeline( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, nbodyForceUpdate.pipeline );
 
 			// bind the descriptor set, as just recorded
-			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, Raytrace.pipelineLayout, 0, 1, &Raytrace.descriptorSet, 0, nullptr );
+			vkCmdBindDescriptorSets( cmd, VK_PIPELINE_BIND_POINT_COMPUTE, nbodyForceUpdate.pipelineLayout, 0, 1, &nbodyForceUpdate.descriptorSet, 0, nullptr );
 
 			// get a new wang RNG seed
-			Raytrace.pushConstants.wangSeed = genWangSeed();
+			nbodyForceUpdate.pushConstants.wangSeed = genWangSeed();
 
 			// send the current value of the push constants
-			vkCmdPushConstants( cmd, Raytrace.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &Raytrace.pushConstants );
+			vkCmdPushConstants( cmd, nbodyForceUpdate.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof( PushConstants ), &nbodyForceUpdate.pushConstants );
 
 			// dispatch for all the pixels
-			vkCmdDispatch( cmd, ImageBufferResolution.width / 16, ImageBufferResolution.height / 16, 1 );
+			vkCmdDispatch( cmd, ( numForces + 15 ) / 16, 1, 1 );
 
 			// also needs to include access barrier for the resolve image
-			VkImageMemoryBarrier2 barrier {
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			VkBufferMemoryBarrier2 barrier {
+				.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
 
 				.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 				.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
@@ -633,32 +640,27 @@ void PrometheusInstance::initComputePasses () {
 				.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 				.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
 
-				// now the blur has finished, we are using the filtered reads until the next agent raster
-				.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-
-				.image = XYZImage.image,
-				.subresourceRange = {
-					VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1
-				}
+				.buffer = ForceBuffer.buffer,
+				.offset = 0,
+				.size = VK_WHOLE_SIZE,
 			};
 
 			VkDependencyInfo barrierDependency {
 				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.imageMemoryBarrierCount = 1,
-				.pImageMemoryBarriers = &barrier
+				.bufferMemoryBarrierCount = 1,
+				.pBufferMemoryBarriers = &barrier
 			};
 
 			vkCmdPipelineBarrier2( cmd, &barrierDependency );
 		};
 	}
-	*/
 
 	{ // Acceleration  Update
 		{ // descriptor layout
 			DescriptorLayoutBuilder builder;
 			builder.add_binding( 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ); // global config UBO
-			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ); // the SSBO with point locations
+			builder.add_binding( 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ); // the SSBO with body locations
+			builder.add_binding( 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ); // the SSBO with the body-to-body forces
 			nbodyAccelUpdate.descriptorSetLayout = builder.build( device, VK_SHADER_STAGE_COMPUTE_BIT );
 		}
 
@@ -715,6 +717,7 @@ void PrometheusInstance::initComputePasses () {
 				DescriptorWriter writer;
 				writer.write_buffer( 0, GlobalUBO.buffer, sizeof( GlobalData ), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER );
 				writer.write_buffer( 1, PointBuffer.buffer, numPointSprites * sizeof( pointState ), 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER );
+				writer.write_buffer( 2, ForceBuffer.buffer, numForces * sizeof( glm::vec4 ), 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER );
 				writer.update_set( device, nbodyAccelUpdate.descriptorSet );
 			}
 

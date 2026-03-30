@@ -20,6 +20,7 @@ layout( set = 0, binding = 0 ) uniform globalData {
 	float aspectRatio;
 	float invAspectRatio;
 	int numPoints;
+	int numForces;
 } GlobalData;
 //=========================================================
 

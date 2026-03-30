@@ -62,7 +62,9 @@ struct GlobalData {
 	int frameNumber;
 	int reset = 0;
 	float aspectRatio;
+	float invAspectRatio;
 	int numPoints;
+	int numForces;
 };
 
 // smallest scope CPU->GPU passing of information
@@ -122,7 +124,8 @@ public:
 	ComputeEffect BufferPresent;
 
 	// abusing the ComputeEffect struct for a raster pipeline
-	uint32_t numPointSprites = 16 * 100;
+	uint32_t numPointSprites = 16 * 800;
+	uint32_t numForces;
 	AllocatedImage pointSpriteColorAttachment;
 	AllocatedImage pointSpriteDepthAttachment;
 	ComputeEffect pointSpriteRaster;
