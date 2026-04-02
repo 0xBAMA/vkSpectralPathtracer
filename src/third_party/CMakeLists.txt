@@ -10,7 +10,31 @@ add_subdirectory( yaml-cpp )
 
 add_subdirectory(fastgltf)
 add_subdirectory(fmt EXCLUDE_FROM_ALL)
-add_subdirectory(SDL EXCLUDE_FROM_ALL)
+
+# Include the command that downloads libraries
+include(FetchContent)
+
+# define a function for adding git dependencies
+function(include_dependency libName gitURL gitTag)
+	# setup the declare
+	FetchContent_Declare(${libName}
+			GIT_REPOSITORY ${gitURL}
+			GIT_TAG        ${gitTag}
+			GIT_SHALLOW    TRUE
+			GIT_PROGRESS   TRUE
+	)
+
+	FetchContent_MakeAvailable(${libName})
+endfunction()
+
+# add SDL3 support
+find_package(SDL3 QUIET)
+if (NOT SDL3_FOUND)
+	message(STATUS "Getting SDL3 from Github")
+	include_dependency(SDL3 https://github.com/libsdl-org/SDL.git release-3.4.2)
+else()
+	message(STATUS "Using local SDL3")
+endif()
 
 target_sources(vkbootstrap PRIVATE 
   vkbootstrap/VkBootstrap.h
@@ -45,9 +69,9 @@ target_sources(imgui PRIVATE
   imgui/imgui_widgets.cpp
   imgui/imgui_tables.cpp
   imgui/imgui_impl_vulkan.cpp
-  imgui/imgui_impl_sdl2.cpp
+  imgui/imgui_impl_sdl3.cpp
 )
 
-target_link_libraries( imgui PUBLIC Vulkan::Vulkan SDL2::SDL2 )
+target_link_libraries( imgui PUBLIC Vulkan::Vulkan SDL3::SDL3 )
 
 target_include_directories(stb_image INTERFACE stb_image)

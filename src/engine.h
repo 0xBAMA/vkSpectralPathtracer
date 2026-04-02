@@ -124,7 +124,7 @@ public:
 	ComputeEffect BufferPresent;
 
 	// abusing the ComputeEffect struct for a raster pipeline
-	uint32_t numPointSprites = 16 * 800;
+	uint32_t numPointSprites = 16 * 200;
 	uint32_t numForces;
 	AllocatedImage pointSpriteColorAttachment;
 	AllocatedImage pointSpriteDepthAttachment;

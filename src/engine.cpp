@@ -1,7 +1,10 @@
 #include "engine.h"
 
-#include <SDL.h>
-#include <SDL_vulkan.h>
+// #include <SDL.h>
+// #include <SDL_vulkan.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_vulkan.h>
 
 #include <vk_types.h>
 #include <vk_initializers.h>
@@ -17,7 +20,7 @@
 #include "vk_mem_alloc.h"
 
 #include "third_party/imgui/imgui.h"
-#include "third_party/imgui/imgui_impl_sdl2.h"
+#include "third_party/imgui/imgui_impl_sdl3.h"
 #include "third_party/imgui/imgui_impl_vulkan.h"
 
 #include "third_party/yaml-cpp/include/yaml-cpp/yaml.h"
@@ -34,14 +37,14 @@ void PrometheusInstance::Init () {
 	SDL_WindowFlags windowFlags = ( SDL_WindowFlags ) ( SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE );
 
 	SDL_Rect viewRect;
-	SDL_GetDisplayBounds( 0, &viewRect );
+	int numDisplays;
+	SDL_DisplayID *displays = SDL_GetDisplays( &numDisplays );
+	SDL_GetDisplayBounds( displays[ 0 ], &viewRect );
 	windowExtent.width = 3 * viewRect.w / 4;
 	windowExtent.height = 3 * viewRect.h / 4;
 
 	window = SDL_CreateWindow(
 		"Prometheus",
-		SDL_WINDOWPOS_UNDEFINED,
-		SDL_WINDOWPOS_UNDEFINED,
 		windowExtent.width,
 		windowExtent.height,
 		windowFlags );
@@ -149,7 +152,7 @@ void PrometheusInstance::Draw () {
 	vkutil::transition_image( cmd, swapchainImages[ swapchainImageIndex ], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL );
 
 	//draw imgui into the swapchain image
-	drawImgui( cmd, swapchainImageViews[ swapchainImageIndex ] );
+	// drawImgui( cmd, swapchainImageViews[ swapchainImageIndex ] );
 
 	// transition the image from layout general to ready-for-swapchain-handoff
 	vkutil::transition_image( cmd, swapchainImages[ swapchainImageIndex ], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR );
@@ -199,58 +202,48 @@ void PrometheusInstance::MainLoop () {
 
 	while ( !quit ) {
 		// event handling loop
-		while ( SDL_PollEvent( &e ) != 0 ) {
-			if ( e.type == SDL_QUIT ) {
+		while ( SDL_PollEvent( &e ) ) {
+			if ( e.type == SDL_EVENT_QUIT ) {
 				quit = true;
 			}
 
-			if ( e.type == SDL_KEYUP && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE ) {
+			if ( e.type == SDL_EVENT_KEY_UP && e.key.scancode == SDL_SCANCODE_ESCAPE ) {
 				quit = true;
 			}
 
-			const uint8_t* kb = SDL_GetKeyboardState( NULL );
-			const float amount = SDL_GetModState() & KMOD_LSHIFT ? 0.1f : 0.01f;
-			if ( kb[ SDL_SCANCODE_RIGHT ] + kb[ SDL_SCANCODE_D ] != 0 ) {
+			const bool* kb = SDL_GetKeyboardState( NULL );
+			const float amount = SDL_GetModState() & SDL_KMOD_LSHIFT ? 0.1f : 0.01f;
+			if ( kb[ SDL_SCANCODE_RIGHT ] || kb[ SDL_SCANCODE_D ] ) {
 				globalData.rotation = glm::rotate( globalData.rotation, amount, glm::vec3( 0.0f, 1.0f, 0.0f ) );
 				globalData.reset = 1;
 			}
-			if ( kb[ SDL_SCANCODE_LEFT ] + kb[ SDL_SCANCODE_A ] != 0 ) {
+			if ( kb[ SDL_SCANCODE_LEFT ] || kb[ SDL_SCANCODE_A ] ) {
 				globalData.rotation = glm::rotate( globalData.rotation, -amount, glm::vec3( 0.0f, 1.0f, 0.0f ) );
 				globalData.reset = 1;
 			}
-			if ( kb[ SDL_SCANCODE_UP ] + kb[ SDL_SCANCODE_W ] != 0 ) {
+			if ( kb[ SDL_SCANCODE_UP ] || kb[ SDL_SCANCODE_W ] ) {
 				globalData.rotation = glm::rotate( globalData.rotation, amount, glm::vec3( 1.0f, 0.0f, 0.0f ) );
 				globalData.reset = 1;
 			}
-			if ( kb[ SDL_SCANCODE_DOWN ] + kb[ SDL_SCANCODE_S ] != 0 ) {
+			if ( kb[ SDL_SCANCODE_DOWN ] || kb[ SDL_SCANCODE_S ] ) {
 				globalData.rotation = glm::rotate( globalData.rotation, -amount, glm::vec3( 1.0f, 0.0f, 0.0f ) );
 				globalData.reset = 1;
 			}
-			if ( kb[ SDL_SCANCODE_PAGEUP ] + kb[ SDL_SCANCODE_Q ] != 0 ) {
+			if ( kb[ SDL_SCANCODE_PAGEUP ] || kb[ SDL_SCANCODE_Q ] ) {
 				globalData.rotation = glm::rotate( globalData.rotation, -amount, glm::vec3( 0.0f, 0.0f, 1.0f ) );
 				globalData.reset = 1;
 			}
-			if ( kb[ SDL_SCANCODE_PAGEDOWN ] + kb[ SDL_SCANCODE_E ] != 0 ) {
+			if ( kb[ SDL_SCANCODE_PAGEDOWN ] || kb[ SDL_SCANCODE_E ] ) {
 				globalData.rotation = glm::rotate( globalData.rotation, amount, glm::vec3( 0.0f, 0.0f, 1.0f ) );
 				globalData.reset = 1;
 			}
-			if ( kb[ SDL_SCANCODE_R ] != 0 ) {
+			if ( kb[ SDL_SCANCODE_R ] ) {
 				globalData.rotation = glm::scale( globalData.rotation, glm::vec3( 0.9f ) );
 				globalData.reset = 1;
 			}
 
-
-			if ( e.type == SDL_WINDOWEVENT ) {
-				if ( e.window.event == SDL_WINDOWEVENT_MINIMIZED ) {
-					stopRendering = true;
-				}
-				if ( e.window.event == SDL_WINDOWEVENT_RESTORED ) {
-					stopRendering = false;
-				}
-			}
-
 			//send SDL event to imgui for handling
-			ImGui_ImplSDL2_ProcessEvent( &e );
+			ImGui_ImplSDL3_ProcessEvent( &e );
 		}
 
 		// handling minimized application
@@ -258,9 +251,10 @@ void PrometheusInstance::MainLoop () {
 			// throttle the speed to avoid busy loop
 			std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
 		} else {
+			/*
 			// imgui new frame
 			ImGui_ImplVulkan_NewFrame();
-			ImGui_ImplSDL2_NewFrame();
+			ImGui_ImplSDL3_NewFrame();
 			ImGui::NewFrame();
 
 			// some imgui UI to test
@@ -286,6 +280,7 @@ void PrometheusInstance::MainLoop () {
 
 			// make imgui calculate internal draw structures
 			ImGui::Render();
+			*/
 
 			// we're ready to draw the next frame
 			Draw();
@@ -356,7 +351,7 @@ void PrometheusInstance::initVulkan () {
 	debugMessenger = vkb_inst.debug_messenger;
 
 	// create a surface to render to
-	SDL_Vulkan_CreateSurface( window, instance, &surface );
+	SDL_Vulkan_CreateSurface( window, instance, NULL, &surface );
 
 	//vulkan 1.3 features
 	VkPhysicalDeviceVulkan13Features features13{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
@@ -1401,7 +1396,7 @@ void PrometheusInstance::initImgui () {
 	ImGui::CreateContext();
 
 	// this initializes imgui for SDL
-	ImGui_ImplSDL2_InitForVulkan( window );
+	ImGui_ImplSDL3_InitForVulkan( window );
 
 	// this initializes imgui for Vulkan
 	ImGui_ImplVulkan_InitInfo init_info = {};
@@ -1414,15 +1409,15 @@ void PrometheusInstance::initImgui () {
 	init_info.ImageCount = 3;
 	init_info.UseDynamicRendering = true;
 
+	/*
 	//dynamic rendering parameters for imgui to use
 	init_info.PipelineRenderingCreateInfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
 	init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
 	init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &swapchainImageFormat;
-
 	init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	*/
 
 	ImGui_ImplVulkan_Init( &init_info );
-	ImGui_ImplVulkan_CreateFontsTexture();
 
 	// add the destroy the imgui created structures
 	mainDeletionQueue.push_function( [ = ] ()  {
