@@ -29,12 +29,12 @@ void main () {
 	// store the image
 	vec4 col = vec4( 1.0f );
 	if ( idVal != 0 ) {
-//		col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() ) * depth;
-		col.rgb = vec3( depth );
+		col.rgb = vec3( NormalizedRandomFloat(), NormalizedRandomFloat(), NormalizedRandomFloat() ) * ( 0.5f * depth + 0.5f );
+//		col.rgb = vec3( depth );
 	//	col.rgb = vec3( center );
 	//	col.rgb = vec3( 1.0f / radius );
 	} else {
-		col.rgb = vec3( 0.0f );
+		col.rgb = mix( vec3( 0.0f ), imageLoad( image, loc ).rgb, 0.99f );
 	}
 	imageStore( image, loc, col );
 }

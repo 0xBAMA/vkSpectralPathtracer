@@ -55,13 +55,14 @@ vec3 wrap ( vec3 pos ) {
 
 void main () {
 	seed = PushConstants.wangSeed + 42069 * gl_GlobalInvocationID.x;
-	if ( GlobalData.frameNumber % 500 == 0 ) {
+	if ( ( GlobalData.frameNumber - 100 ) % 5000 == 0 ) {
 		// initializing the point values
-		points[ gl_GlobalInvocationID.x ].position.xyz = wrap( 10.0f * vec3( NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() ) );
+//		points[ gl_GlobalInvocationID.x ].position.xyz = wrap( 10.0f * vec3( NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() ) );
+		points[ gl_GlobalInvocationID.x ].position.xyz = wrap( RandomUnitVector() * vec3( 1.0f, 1.0f, 0.1f ) );
 //		points[ gl_GlobalInvocationID.x ].position.xyz = vec3( 0.4f * NormalizedRandomFloat() - 0.2f, 0.4f * NormalizedRandomFloat() - 0.2f, 0.5f );
 		 points[ gl_GlobalInvocationID.x ].velocity.xyz = 0.001f * normalize( vec3( NormalizedRandomFloat() - 0.5f, NormalizedRandomFloat() - 0.5f, 0.1f * ( NormalizedRandomFloat() - 0.5f ) ) );
 		//		points[ gl_GlobalInvocationID.x ].velocity.xyz = vec3( 0.0f );
-		points[ gl_GlobalInvocationID.x ].mass.x = ( 30.0f ) + 100.0f * int( NormalizedRandomFloat() * 4.7f );
+		points[ gl_GlobalInvocationID.x ].mass.x = ( 500.0f * NormalizedRandomFloat() + 100.0f );
 	} else {
 		// we need to sum over the forces acting on this body...
 		uint myIndex = gl_GlobalInvocationID.x;
@@ -81,7 +82,7 @@ void main () {
 				forceSum += scalar * forces[ indexFromNode( forcePick ) ].xyz / myMass;
 			}
 		}
-		float timeStep = 0.0001f;
+		float timeStep = 0.00001f;
 		points[ myIndex ].acceleration.xyz = forceSum / points[ myIndex ].mass.r;
 		points[ myIndex ].velocity.xyz += timeStep * points[ myIndex ].acceleration.xyz;
 		points[ myIndex ].position.xyz += timeStep * points[ myIndex ].velocity.xyz;

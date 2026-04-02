@@ -78,8 +78,14 @@ void main () {
 	vec3 displacement = lilPt - bigPt;
 	float d = length( displacement );
 	// calculate force, with some clamping on minimum distance
-	 vec3 force = ( bigMass * lilMass ) / ( max( d * d, 0.01f ) * d ) * displacement;
+	 vec3 force = ( bigMass * lilMass ) / ( max( d * d, 0.00001f ) * d ) * displacement;
 //	vec3 force = ( bigMass * lilMass ) / ( d * d * d ) * displacement;
+
+	 float r = ( bigMass + lilMass ) / 5000.0f;
+//	float r = ( bigMass + lilMass ) / 1000.0f;
+	if ( d < r ) {
+		force = -1.0f * ( force );
+	}
 
 	// sign convention holds that we are going to store the force that acts in xxx direction (tbd)
 	forces[ index ].xyz = force;
